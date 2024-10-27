@@ -16,6 +16,8 @@ mod task;
 
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -37,15 +39,15 @@ pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
     /// use inner value to get mutable access
-    inner: UPSafeCell<TaskManagerInner>,
+    pub inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
-struct TaskManagerInner {
+pub struct TaskManagerInner {
     /// task list
-    tasks: Vec<TaskControlBlock>,
+    pub tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    current_task: usize,
+    pub current_task: usize,
 }
 
 lazy_static! {
@@ -79,6 +81,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.start_time = get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -139,6 +142,10 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            let next_task = &mut inner.tasks[next];
+            if next_task.task_status == TaskStatus::UnInit{
+                next_task.start_time = get_time_ms();
+            }
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -152,6 +159,27 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    // pub fn get_memset_mut(&mut self) -> &mut MemorySet{
+    //     let current_task = self.inner.exclusive_access().current_task;
+    //     &mut self.inner.exclusive_access().tasks[current_task].memory_set
+    // }
+
+    /// Get current task's ControlBlock 
+    pub fn get_task_info(&self, ti:&mut TaskInfo){
+        let inner = self.inner.exclusive_access();
+        let pcb = &inner.tasks[inner.current_task];
+        ti.status = pcb.task_status;
+        ti.syscall_times.copy_from_slice(&pcb.syscall_times);
+        ti.time = get_time_ms() - pcb.start_time;
+    }
+
+    ///  Record syscall times 
+    pub fn record_syscall(&self, syscall_id:usize){
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] += 1;
     }
 }
 
