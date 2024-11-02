@@ -23,7 +23,19 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        if self.ready_queue.is_empty() {
+            return None;
+        }
+        let mut tcb = self.ready_queue[0].clone();
+        let mut index = 0;
+        for (i, tcb_t) in self.ready_queue.iter().enumerate() {
+            if tcb_t.get_stride() < tcb.get_stride() {
+                tcb = tcb_t.clone();
+                index = i;
+            }
+        }
+        self.ready_queue.remove(index);
+        Some(tcb)
     }
 }
 
