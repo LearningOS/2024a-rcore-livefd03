@@ -1,15 +1,18 @@
 //! Process management syscalls
-//!
+use core::{mem::size_of, slice};
+
 use alloc::sync::Arc;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
+    mm::{translated_byte_buffer, MapPermission, VirtAddr},
     mm::{translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        suspend_current_and_run_next, TaskStatus, BIG_STRIDE,
     },
+    timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -114,15 +117,34 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
+fn copy_to_user(src: usize, dst: usize, size: usize) {
+    let pg_token = current_user_token();
+    let mut dst_buf = translated_byte_buffer(pg_token, dst as *const u8, size);
+    let src_slice = unsafe { slice::from_raw_parts(src as *const u8, size) };
+    let mut count = 0;
+    for buf_slice in dst_buf.iter_mut() {
+        let target_len = buf_slice.len();
+        buf_slice.copy_from_slice(&src_slice[count..count + target_len]);
+        count += target_len
+    }
+}
+
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+    trace!("kernel:pid[{}] sys_get_time", current_task().unwrap().pid.0);
+    let us = get_time_us();
+    let timeval = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    copy_to_user(
+        (&timeval) as *const TimeVal as usize,
+        _ts as usize,
+        size_of::<TimeVal>(),
     );
-    -1
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -130,27 +152,69 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info",
         current_task().unwrap().pid.0
     );
-    -1
+    let ti = {
+        let pcb = current_task().unwrap();
+        let pcb_inner = pcb.inner_exclusive_access();
+        TaskInfo {
+            status: pcb_inner.task_status,
+            syscall_times: pcb_inner.syscall_times.clone(),
+            time: get_time_ms() - pcb_inner.start_time,
+        }
+    };
+    copy_to_user(
+        (&ti) as *const TaskInfo as usize,
+        _ti as usize,
+        size_of::<TaskInfo>(),
+    );
+    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+    if !start_va.aligned() {
+        return -1;
+    }
+    if _port & !0x7 != 0 || _port == 0 {
+        return -1;
+    }
+    let permission: MapPermission =
+        MapPermission::from_bits_truncate(((_port as u8) << 1) | (1 << 4));
+
+    // get current task memset
+    let pcb = current_task().unwrap();
+    let mut pcb_inner = pcb.inner_exclusive_access();
+    let memset = &mut pcb_inner.memory_set;
+
+    if memset.contain_area(start_va, end_va) {
+        return -1;
+    }
+    memset.insert_framed_area(start_va, end_va, permission);
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    trace!("kernel:pid[{}] sys_munmap", current_task().unwrap().pid.0);
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+    if !start_va.aligned() {
+        return -1;
+    }
+    if current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .memory_set
+        .munmap(start_va, end_va)
+        .is_ok()
+    {
+        return 0;
+    }
     -1
 }
 
@@ -167,18 +231,32 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_spawn", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let data = app_inode.read_all();
+        let current_task = current_task().unwrap();
+        let new_task = current_task.spawn(&data);
+        let new_pid = new_task.pid.0;
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.pass = BIG_STRIDE / _prio;
+    _prio
 }

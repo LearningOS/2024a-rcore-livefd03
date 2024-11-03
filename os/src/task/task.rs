@@ -1,15 +1,20 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
+use crate::config::MAX_SYSCALL_NUM;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+
+/// const BIG_STRIDE for stride
+pub const BIG_STRIDE: isize = 255;
 
 /// Task control block structure
 ///
@@ -35,6 +40,10 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+    /// Get the stride of this task
+    pub fn get_stride(&self) -> isize {
+        self.inner_exclusive_access().stride
     }
 }
 
@@ -71,6 +80,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Start running time of task
+    pub start_time: usize,
+
+    /// Pass of task
+    pub pass: isize,
+
+    /// Stride of task
+    pub stride: isize,
 }
 
 impl TaskControlBlockInner {
@@ -135,6 +156,10 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    pass: BIG_STRIDE / 16,
+                    stride: 0,
                 })
             },
         };
@@ -216,6 +241,10 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    pass: BIG_STRIDE / 16,
+                    stride: parent_inner.stride,
                 })
             },
         });
@@ -229,6 +258,22 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// parent process spawn the child process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // ---- access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
+
+        let child_tcb = Arc::new(TaskControlBlock::new(elf_data));
+        {
+            let mut child_inner = child_tcb.inner_exclusive_access();
+            child_inner.stride = parent_inner.stride;
+        }
+        // add child
+        parent_inner.children.push(child_tcb.clone());
+
+        child_tcb
     }
 
     /// get pid of process
@@ -260,6 +305,12 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Record syscall times
+    pub fn record_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.syscall_times[syscall_id] += 1;
     }
 }
 

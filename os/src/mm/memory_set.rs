@@ -318,6 +318,40 @@ impl MemorySet {
             false
         }
     }
+
+    /// Check whether the address ranges overlap
+    pub fn contain_area(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = VirtPageNum::from(start_va);
+        let end_vpn = end_va.ceil();
+        for map_area in self.areas.iter() {
+            if map_area.vpn_range.get_start() >= end_vpn
+                || start_vpn >= map_area.vpn_range.get_end()
+            {
+                continue;
+            }
+            return true;
+        }
+        false
+    }
+    /// Unmap
+    pub fn munmap(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> Result<(), ()> {
+        let start_vpn = VirtPageNum::from(start_va);
+        let end_vpn = end_va.ceil();
+        let mut area_index = None;
+        for (index, map_area) in self.areas.iter_mut().enumerate() {
+            if map_area.vpn_range.get_start() == start_vpn
+                && end_vpn == map_area.vpn_range.get_end()
+            {
+                map_area.unmap(&mut self.page_table);
+                area_index = Some(index);
+            }
+        }
+        if let Some(index) = area_index {
+            self.areas.remove(index);
+            return Ok(());
+        }
+        Err(())
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
