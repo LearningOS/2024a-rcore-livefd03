@@ -8,13 +8,14 @@ use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
 /// const BIG_STRIDE for stride
-pub const BIG_STRIDE: isize = 255;
+pub const BIG_STRIDE: usize = usize::MAX;
 
 /// Task control block structure
 ///
@@ -42,7 +43,7 @@ impl TaskControlBlock {
         inner.memory_set.token()
     }
     /// Get the stride of this task
-    pub fn get_stride(&self) -> isize {
+    pub fn get_stride(&self) -> usize {
         self.inner_exclusive_access().stride
     }
 }
@@ -74,6 +75,7 @@ pub struct TaskControlBlockInner {
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+    pub fd_name:Vec<Option<String>>,
 
     /// Heap bottom
     pub heap_bottom: usize,
@@ -88,10 +90,10 @@ pub struct TaskControlBlockInner {
     pub start_time: usize,
 
     /// Pass of task
-    pub pass: isize,
+    pub pass: usize,
 
     /// Stride of task
-    pub stride: isize,
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -154,6 +156,7 @@ impl TaskControlBlock {
                         // 2 -> stderr
                         Some(Arc::new(Stdout)),
                     ],
+                    fd_name:Vec::new(),
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     syscall_times: [0; MAX_SYSCALL_NUM],
@@ -239,6 +242,7 @@ impl TaskControlBlock {
                     children: Vec::new(),
                     exit_code: 0,
                     fd_table: new_fd_table,
+                    fd_name:parent_inner.fd_name.clone(),
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     syscall_times: [0; MAX_SYSCALL_NUM],

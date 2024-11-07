@@ -1,12 +1,12 @@
 //! Process management syscalls
-use core::{mem::size_of, slice};
+use core::mem::size_of;
 
 use alloc::sync::Arc;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_byte_buffer, MapPermission, VirtAddr},
+    mm::{ MapPermission, VirtAddr},
     mm::{translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
@@ -14,6 +14,8 @@ use crate::{
     },
     timer::{get_time_ms, get_time_us},
 };
+
+use super::copy_to_user;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -117,17 +119,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
-fn copy_to_user(src: usize, dst: usize, size: usize) {
-    let pg_token = current_user_token();
-    let mut dst_buf = translated_byte_buffer(pg_token, dst as *const u8, size);
-    let src_slice = unsafe { slice::from_raw_parts(src as *const u8, size) };
-    let mut count = 0;
-    for buf_slice in dst_buf.iter_mut() {
-        let target_len = buf_slice.len();
-        buf_slice.copy_from_slice(&src_slice[count..count + target_len]);
-        count += target_len
-    }
-}
+
 
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
@@ -257,6 +249,6 @@ pub fn sys_set_priority(_prio: isize) -> isize {
     }
     let current = current_task().unwrap();
     let mut inner = current.inner_exclusive_access();
-    inner.pass = BIG_STRIDE / _prio;
+    inner.pass = BIG_STRIDE / (_prio as usize);
     _prio
 }

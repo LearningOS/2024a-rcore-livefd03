@@ -29,7 +29,9 @@ impl TaskManager {
         let mut tcb = self.ready_queue[0].clone();
         let mut index = 0;
         for (i, tcb_t) in self.ready_queue.iter().enumerate() {
-            if tcb_t.get_stride() < tcb.get_stride() {
+            let stride_t = tcb_t.get_stride();
+            let stride = tcb.get_stride();
+            if stride_t.wrapping_sub(stride) < usize::MAX/2 {
                 tcb = tcb_t.clone();
                 index = i;
             }

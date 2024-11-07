@@ -5,6 +5,7 @@ use super::{
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use log::debug;
 use spin::{Mutex, MutexGuard};
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
@@ -30,7 +31,7 @@ impl Inode {
         }
     }
     /// Call a function over a disk inode to read it
-    fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
+    pub fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
         get_block_cache(self.block_id, Arc::clone(&self.block_device))
             .lock()
             .read(self.block_offset, f)
@@ -137,6 +138,61 @@ impl Inode {
             self.block_device.clone(),
         )))
         // release efs lock automatically by compiler
+    }
+    /// get inode_id
+    pub fn get_inode_id(&self) -> usize {
+        let fs = self.fs.lock();
+        fs.get_inode_id(self.block_id, self.block_offset)
+    }
+    /// delete inode under current inode by name
+    pub fn delete(&self, inode: Arc<Inode>, name: &str) {
+        debug!("Inode::delete entry");
+        let mut offset = 0;
+        self.modify_disk_inode(|disk_inode| {
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for _ in 0..file_count {
+                assert_eq!(
+                    disk_inode.read_at(offset, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    break;
+                }
+                offset += DIRENT_SZ;
+            }
+            debug!("Inode::delete before write");
+            disk_inode.write_at(offset, &[0u8; DIRENT_SZ],&self.block_device);
+        });
+        debug!("Inode::delete update inode");
+        inode.modify_disk_inode(|disk_inode|{
+            disk_inode.link_count -= 1;
+        });
+        debug!("Inode::delete exit");
+    }
+
+    /// Create inode link for current inode by name
+    pub fn create_link(&self, src_inode: Arc<Inode>, name: &str) {
+        debug!("Inode::create_link");
+        src_inode.modify_disk_inode(|disk_inode| {
+            disk_inode.link_count += 1;
+        });
+        let inode_id = src_inode.get_inode_id();
+        let mut fs = self.fs.lock();
+        self.modify_disk_inode(|root_inode| {
+            // append file in the dirent
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(name, inode_id as u32);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
     }
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {

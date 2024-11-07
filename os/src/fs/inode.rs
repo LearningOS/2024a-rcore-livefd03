@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -121,6 +121,44 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
             }
             Arc::new(OSInode::new(readable, writable, inode))
         })
+    }
+}
+
+/// stat fo file
+pub fn stat_file(path:&str) -> Option<Stat>{
+    let inode = ROOT_INODE.find(path)?;
+    let mut stat = inode.read_disk_inode(|diskinode|{
+        Stat { dev: 0, ino: 0, mode: StatMode::FILE, nlink: diskinode.link_count, pad: Default::default() }
+    });
+    stat.ino = inode.get_inode_id() as u64;
+    Some(stat)
+}
+
+/// create a link for file
+pub fn link_file(src_path: &str, new_path: &str) -> bool {
+    let old_inode = ROOT_INODE.find(src_path);
+    if old_inode.is_none(){
+        return false;
+    }
+    let old_inode = old_inode.unwrap();
+    ROOT_INODE.create_link(old_inode, new_path);
+    true
+}
+
+/// delete a link for file
+pub fn unlink_file(name: &str) -> bool{
+    debug!("unlink_file entry");
+    let inode = ROOT_INODE.find(name);
+    
+    if let Some(inode) = inode{
+        debug!("unlink_file find");
+        ROOT_INODE.delete(inode,name);
+        debug!("unlink_file exit");
+        true
+    }
+    else{
+        debug!("unlink_file not find");
+        false
     }
 }
 
