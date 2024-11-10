@@ -29,6 +29,11 @@ impl Semaphore {
         }
     }
 
+    /// get count of Semaphore
+    pub fn count(&self) -> isize{
+        self.inner.exclusive_access().count
+    }
+
     /// up operation of semaphore
     pub fn up(&self) {
         trace!("kernel: Semaphore::up");
